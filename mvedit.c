@@ -357,13 +357,17 @@ static void handle_key_event(MVUiEvent *event) {
                 batching = 0;
             }
         } else {
-            if (!batching && _gs_rdy(MV_INPATH) > 0) {
+            if (!batching && _gs_rdy(MV_INPATH) != -1) {
                 text_view_begin_batch(&editor);   /* more queued: batch them */
                 batching = 1;
             }
             text_view_key(&editor, c);
         }
-        if (_gs_rdy(MV_INPATH) <= 0) {
+        /* _gs_rdy (SS_Ready) returns -1 only when the input buffer is empty;
+           a ready byte may read as 0, so test against -1 (as MVKit's file
+           dialog does), not > 0 -- otherwise a queued key is left unread and
+           waits for the run loop's next signal. */
+        if (_gs_rdy(MV_INPATH) == -1) {
             break;
         }
         if (read(MV_INPATH, &c, 1) != 1) {
