@@ -1,0 +1,12 @@
+.DS_Store
+mvkit
+cmoc_os9
+xmastree
+build
+
+# local tooling / ad-hoc verification artifacts
+.claude
+snap
+drive.lua
+probe.lua
+snap.lua

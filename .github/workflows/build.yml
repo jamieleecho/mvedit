@@ -1,0 +1,19 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  check-build:
+    runs-on: ubuntu-latest
+    container:
+      image: jamieleecho/coco-dev:latest
+    steps:
+      - uses: actions/checkout@master
+
+      - name: Check compile
+        run: |
+          make && make
