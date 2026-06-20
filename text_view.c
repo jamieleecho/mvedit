@@ -6,11 +6,13 @@
 
 
 /* Key codes delivered by the NitrOS-9 CoCo keyboard. Up/Down are confirmed by
-   MVKit's file dialog (it scrolls on 0x0C / 0x0A); Right is 0x09 and the
-   left/erase key is 0x08. The CoCo has no distinct Backspace, so 0x08 erases
-   (cursor-left is done with the mouse, per this app's mouse-driven design).
+   MVKit's file dialog (it scrolls on 0x0C / 0x0A). The arrow keys move the
+   cursor: left 0x08 (the left/erase key), right 0x09, up 0x0C, down 0x0A.
+   Backspace is the ESC/BREAK key (0x05) -- the same code the file dialog reads
+   for Escape, available as data because mvedit_init clears the abort char.
    Verify on real hardware and adjust if your keymap differs. */
-#define KEY_BACKSPACE 0x08
+#define KEY_BACKSPACE 0x05   /* ESC / BREAK -> delete the char to the left */
+#define KEY_LEFT      0x08   /* the left/erase key -> move the cursor left */
 #define KEY_RIGHT     0x09
 #define KEY_DOWN      0x0A
 #define KEY_ENTER     0x0D
@@ -583,6 +585,17 @@ static void move_right(TextView *v) {
     after_move(v, had);
 }
 
+static void move_left(TextView *v) {
+    int had = has_selection(v);
+    if (v->cur_col > 0) {
+        --v->cur_col;
+    } else if (v->cur_line > 0) {
+        --v->cur_line;
+        v->cur_col = line_len(v, v->cur_line);
+    }
+    after_move(v, had);
+}
+
 /* The document line at the top of the region an edit may have dirtied: a
    selection's first line if one was active, else the cursor's line. */
 static int edit_from_line(TextView *v, int had_selection) {
@@ -738,6 +751,7 @@ int text_view_key(TextView *v, char c) {
     switch (c) {
         case KEY_UP:        move_up(v);      return 1;
         case KEY_DOWN:      move_down(v);    return 1;
+        case KEY_LEFT:      move_left(v);    return 1;
         case KEY_RIGHT:     move_right(v);   return 1;
         case KEY_ENTER:     do_enter(v);     return 1;
         case KEY_BACKSPACE: do_backspace(v); return 1;

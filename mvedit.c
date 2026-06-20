@@ -429,11 +429,22 @@ static void mvedit_pre_init(int argc, char **argv) {
 }
 
 static void mvedit_init(void) {
+    struct sgbuf opts;
+
     assert(strncmp(file_items[FileIndex_Save]._mittl, "Save", 5) == 0);
     assert(strncmp(edit_items[EditIndex_Undo]._mittl, "Undo", 5) == 0);
 
     _cgfx_scalesw(MV_OUTPATH, false);
     _cgfx_font(MV_OUTPATH, GRP_FONT, FNT_S8X8);
+
+    /* Clear the keyboard interrupt/abort chars so ESC/BREAK (0x05, used here as
+       Backspace) and the Ctrl- shortcuts arrive as data instead of raising a
+       signal -- the same thing MVKit's file dialog does. */
+    if (_gs_opt(MV_INPATH, &opts) == 0) {
+        opts.sg_kbich = 0;
+        opts.sg_kbach = 0;
+        _ss_opt(MV_INPATH, &opts);
+    }
 
     /* Use the I-beam text pointer (hotspot 3,3) rather than the default arrow;
        the view also toggles this off around every repaint for speed. */

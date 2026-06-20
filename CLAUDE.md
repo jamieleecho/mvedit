@@ -62,16 +62,18 @@ in a scrolling window.
 
 ## Keyboard
 
-- CoCo/NitrOS-9 control codes used here: **Up `$0C`, Down `$0A`** (confirmed by
-  the file dialog's scroll keys), **Right `$09`**, **Enter `$0D`**, and the
-  **left/erase key `$08`**. The CoCo has no separate Backspace, so `$08` erases
-  and there is no left-arrow movement — reposition with the mouse (this app is
-  mouse-driven by design). All key codes are `#define`d at the top of
-  `text_view.c`; **verify against your keymap** and adjust.
+- CoCo/NitrOS-9 control codes used here: the **arrow keys move the cursor** —
+  **Up `$0C`, Down `$0A`** (confirmed by the file dialog's scroll keys),
+  **Right `$09`**, **Left `$08`** (the left/erase key) — **Enter `$0D`**, and
+  **Backspace = ESC/BREAK `$05`** (the code the file dialog reads for Escape).
+  All key codes are `#define`d at the top of `text_view.c`; **verify against your
+  keymap** and adjust. (Verified in MAME: `$08` moves left; the BREAK key,
+  injected via the `:row6` "BREAK" matrix field, deletes.)
 - The main run loop does **not** disable the keyboard interrupt/abort chars, so
-  `Ctrl-C` (`$03`) would raise a signal instead of being read. `mvedit_init()`
-  clears `sg_kbich`/`sg_kbach` (as the file dialog does) so the `Ctrl-` Edit
-  shortcuts arrive as data.
+  `BREAK`/`$05` (abort) and `Ctrl-C` (`$03`, interrupt) would raise a signal
+  instead of being read. `mvedit_init()` clears `sg_kbich`/`sg_kbach` on
+  `MV_INPATH` (as the file dialog does) so `$05` (Backspace here) and the `Ctrl-`
+  Edit shortcuts arrive as data.
 
 ## App architecture (mirrors mvdraw)
 
