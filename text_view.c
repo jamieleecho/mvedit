@@ -165,7 +165,7 @@ static void draw_text_row(const TextView *v, int srow) {
 
 /* Show the Ln/Col field? When off, the status line is just the name + dirty
    marker (redrawn only when that changes) -- no per-keystroke status work. */
-#define SHOW_STATUS_POS 0
+#define SHOW_STATUS_POS 1
 
 #if SHOW_STATUS_POS
 #define STATUS_LEFT_END STATUS_POS_COL      /* leave room for the Ln/Col field */
