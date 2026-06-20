@@ -39,12 +39,17 @@ static const MVTheme theme = { {
 
 #define DOC_EXT ".txt"
 
+/* Undo costs a whole-document snapshot on every change; set to 1 to re-enable. */
+#define ENABLE_UNDO 0
+
 
 /* ---- model / view / document state -------------------------------------- */
 
 static TextDoc textdoc;
+#if ENABLE_UNDO
 static TextDoc undo_buf;        /* single-level undo snapshot */
-static int     has_undo;
+#endif
+static int     has_undo;        /* always 0 when undo is disabled (Undo greyed) */
 
 static char    path[MV_PATH_MAX];
 static int     file_backed;
@@ -241,6 +246,7 @@ static void exit_action(MSRET *msinfo, int menuid, int itemno) {
 }
 
 static void undo_action(MSRET *msinfo, int menuid, int itemno) {
+#if ENABLE_UNDO
     if (!has_undo) {
         return;
     }
@@ -249,6 +255,7 @@ static void undo_action(MSRET *msinfo, int menuid, int itemno) {
     editor.doc_modified = 1;
     text_view_reclamp(&editor);
     refresh_menus_if_changed();
+#endif
 }
 
 static void cut_action(MSRET *msinfo, int menuid, int itemno) {
@@ -313,10 +320,12 @@ static MVMenuItemAction menu_actions[] = {
 
 /* ---- edit notifications: snapshot for undo, mark dirty ------------------- */
 
+#if ENABLE_UNDO
 static void on_will_change(TextView *v) {
     undo_buf = textdoc;
     has_undo = 1;
 }
+#endif
 
 static void on_did_change(TextView *v) {
     editor.doc_modified = 1;
@@ -431,7 +440,9 @@ static void mvedit_init(void) {
     _cgfx_setgc(MV_OUTPATH, GRP_PTR, PTR_TXT);
 
     text_view_init(&editor, 0, 0, EDITOR_COLS * 8, EDITOR_ROWS * 8, &textdoc);
+#if ENABLE_UNDO
     editor.will_change = on_will_change;
+#endif
     editor.did_change = on_did_change;
     text_view_set_status(&editor, status_name, 0);
     text_view_refresh(&editor);

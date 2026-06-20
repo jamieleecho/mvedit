@@ -163,6 +163,17 @@ static void draw_text_row(const TextView *v, int srow) {
    cell (EDITOR_COLS-1) is never written -- that would scroll the window. */
 #define STATUS_POS_COL 60   /* fixed start column of the "Ln .. Col .." field */
 
+/* Show the Ln/Col field? When off, the status line is just the name + dirty
+   marker (redrawn only when that changes) -- no per-keystroke status work. */
+#define SHOW_STATUS_POS 0
+
+#if SHOW_STATUS_POS
+#define STATUS_LEFT_END STATUS_POS_COL      /* leave room for the Ln/Col field */
+#else
+#define STATUS_LEFT_END (EDITOR_COLS - 1)   /* name fills the whole status line */
+#endif
+
+#if SHOW_STATUS_POS
 /* Write n (>=0) left-justified in a `width`-char field, space-padded, in a
    SINGLE cwrite -- one OS-9 call instead of one per digit/space. */
 static void put_int_w(int n, int width) {
@@ -188,16 +199,18 @@ static void put_int_w(int n, int width) {
     }
     cwrite(MV_OUTPATH, buf, w);
 }
+#endif /* SHOW_STATUS_POS */
 
-/* Left part: " name [*]" padded out to STATUS_POS_COL. */
+/* Left part: " name [*]", padded out to STATUS_LEFT_END (the Ln/Col column when
+   the position field is shown, else the whole line). */
 static void draw_status_left(const TextView *v) {
     const char *name = v->doc_name ? v->doc_name : "untitled";
     int nlen = strlen(name);
     int written = 1, pad;
     char sp = ' ';
 
-    if (nlen > STATUS_POS_COL - 4) {
-        nlen = STATUS_POS_COL - 4;          /* clip an over-long name */
+    if (nlen > STATUS_LEFT_END - 4) {
+        nlen = STATUS_LEFT_END - 4;         /* clip an over-long name */
     }
     _cgfx_curxy(MV_OUTPATH, 0, EDITOR_STATUS_ROW);
     _cgfx_revon(MV_OUTPATH);
@@ -206,12 +219,13 @@ static void draw_status_left(const TextView *v) {
     if (v->doc_modified) {
         cwrite(MV_OUTPATH, " *", 2);            written += 2;
     }
-    for (pad = written; pad < STATUS_POS_COL; ++pad) {
+    for (pad = written; pad < STATUS_LEFT_END; ++pad) {
         cwrite(MV_OUTPATH, &sp, 1);
     }
     _cgfx_revoff(MV_OUTPATH);
 }
 
+#if SHOW_STATUS_POS
 /* Fixed columns of the position field: "Ln " 60-62, line 63-66, " Col " 67-71,
    col 72-75, pad 76. The labels never change, so they are drawn once per full
    status redraw; the numbers are rewritten in place (4 cells each) only when
@@ -254,26 +268,31 @@ static void draw_status_nums(TextView *v) {
     }
     _cgfx_revoff(MV_OUTPATH);
 }
+#endif /* SHOW_STATUS_POS */
 
-/* Full status redraw: name, dirty marker, labels, and both numbers. */
+/* Full status redraw: name, dirty marker, and (if enabled) the Ln/Col field. */
 static void draw_status_full(TextView *v) {
     draw_status_left(v);
     v->status_dirty_shown = v->doc_modified ? 1 : 0;
+#if SHOW_STATUS_POS
     draw_status_labels();
     v->status_line_shown = v->status_col_shown = -1;   /* force both numbers */
     draw_status_nums(v);
+#endif
 }
 
-/* Incremental status: rewrite only the parts that changed (the labels are
-   already on screen from a prior full redraw). The common keystroke rewrites
-   just the 4-cell Col number (curxy + revon + cwrite + revoff). */
+/* Incremental status: rewrite only the parts that changed. With the position
+   field off this is a no-op unless the dirty marker flipped, so a keystroke
+   does no status work at all. */
 static void draw_status_inc(TextView *v) {
     int dirty = v->doc_modified ? 1 : 0;
     if (dirty != v->status_dirty_shown) {
         draw_status_left(v);
         v->status_dirty_shown = dirty;
     }
+#if SHOW_STATUS_POS
     draw_status_nums(v);
+#endif
 }
 
 static void draw_caret(const TextView *v) {
