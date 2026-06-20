@@ -619,6 +619,58 @@ static void type_char(TextView *v, char c) {
     }
 }
 
+/* Hardware line insert/delete. _cgfx_insline/_cgfx_delline shift every row below
+   the cursor within the active working area, so we clip the area to just the
+   text rows first -- otherwise they would drag the status line (row
+   EDITOR_STATUS_ROW) along. cwarea is buffered, so the clip, the shift, and the
+   un-clip all flush in order. Coordinates are absolute window cells: a WT_FSWIN
+   content area starts one cell in (the frame). */
+#define WIN_CCOL 1
+#define WIN_CROW 1
+
+static void clip_text_rows(void) {
+    _cgfx_cwarea(MV_OUTPATH, WIN_CCOL, WIN_CROW, EDITOR_COLS, EDITOR_ROWS);
+}
+static void clip_full(void) {
+    _cgfx_cwarea(MV_OUTPATH, WIN_CCOL, WIN_CROW, EDITOR_COLS, EDITOR_ROWS + 1);
+}
+
+/* A line was split at screen row `sr`: push the rows below down with a hardware
+   insert-line and repaint only the two rows that changed (the truncated split
+   line and the new tail). The row pushed off the bottom is correctly lost. */
+static void insert_line_render(TextView *v, int sr) {
+    if (v->suppress_draw) {
+        return;
+    }
+    render_begin();
+    clip_text_rows();
+    _cgfx_curxy(MV_OUTPATH, 0, sr + 1);
+    _cgfx_insline(MV_OUTPATH);
+    draw_text_row(v, sr);
+    draw_text_row(v, sr + 1);
+    clip_full();
+    draw_status_inc(v);
+    render_end(v);
+}
+
+/* A line was removed, leaving the merged line at screen row `sr`: pull the rows
+   below up with a hardware delete-line, then repaint the merged row and the
+   bottom row (a previously off-screen line may have scrolled into it). */
+static void delete_line_render(TextView *v, int sr) {
+    if (v->suppress_draw) {
+        return;
+    }
+    render_begin();
+    clip_text_rows();
+    _cgfx_curxy(MV_OUTPATH, 0, sr + 1);
+    _cgfx_delline(MV_OUTPATH);
+    draw_text_row(v, sr);
+    draw_text_row(v, EDITOR_ROWS - 1);
+    clip_full();
+    draw_status_inc(v);
+    render_end(v);
+}
+
 static void do_enter(TextView *v) {
     int had = has_selection(v);
     int from = edit_from_line(v, had);
@@ -634,8 +686,10 @@ static void do_enter(TextView *v) {
 
     if (ensure_visible(v)) {
         apply_refresh(v, RS_ALL, 0);
+    } else if (had) {
+        apply_refresh(v, RS_FROM, from);   /* selection delete + split: complex */
     } else {
-        apply_refresh(v, RS_FROM, from);   /* split shifts everything below */
+        insert_line_render(v, (v->cur_line - 1) - v->top_line);
     }
 }
 
@@ -668,8 +722,10 @@ static void do_backspace(TextView *v) {
 
     if (ensure_visible(v)) {
         apply_refresh(v, RS_ALL, 0);
-    } else if (had || joined) {
-        apply_refresh(v, RS_FROM, from);   /* lines below shifted up */
+    } else if (had) {
+        apply_refresh(v, RS_FROM, from);   /* selection delete: lines shifted up */
+    } else if (joined) {
+        delete_line_render(v, v->cur_line - v->top_line);
     } else if (del_col >= 0) {
         /* erased one char: [del_col, old_len) shifted left, last cell cleared */
         repaint_row_span(v, del_col - v->left_col, old_len - v->left_col);
