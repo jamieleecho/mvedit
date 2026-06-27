@@ -6,11 +6,13 @@
 
 
 /* Key codes delivered by the NitrOS-9 CoCo keyboard. Up/Down are confirmed by
-   MVKit's file dialog (it scrolls on 0x0C / 0x0A); Right is 0x09 and the
-   left/erase key is 0x08. The CoCo has no distinct Backspace, so 0x08 erases
-   (cursor-left is done with the mouse, per this app's mouse-driven design).
+   MVKit's file dialog (it scrolls on 0x0C / 0x0A). The arrow keys move the
+   cursor: left 0x08 (the left/erase key), right 0x09, up 0x0C, down 0x0A.
+   Backspace is the ESC/BREAK key (0x05) -- the same code the file dialog reads
+   for Escape, available as data because mvedit_init clears the abort char.
    Verify on real hardware and adjust if your keymap differs. */
-#define KEY_BACKSPACE 0x08
+#define KEY_BACKSPACE 0x05   /* ESC / BREAK -> delete the char to the left */
+#define KEY_LEFT      0x08   /* the left/erase key -> move the cursor left */
 #define KEY_RIGHT     0x09
 #define KEY_DOWN      0x0A
 #define KEY_ENTER     0x0D
@@ -53,21 +55,28 @@ static void selection_range(const TextView *v, int *l0, int *c0, int *l1, int *c
    possible line minus a screenful). */
 #define MAX_LEFT (ED_MAX_COLS - EDITOR_COLS + 1)
 
+/* _cgfx_ss_sbar positions the scroll markers in ABSOLUTE CHARACTER COORDINATES
+   within the scroll regions (per the OS-9 Windowing System manual, p.10-64) --
+   rows down from the top of the vertical track, columns right from the left of
+   the horizontal track. NOT a 0..255 proportional value: sending 255 puts the
+   marker far off the track (it wraps/clamps and paints over the up arrow). The
+   track length is about the working-area size. */
+#define SBAR_V_MAX (EDITOR_ROWS - 1)    /* bottom-most vertical marker row    */
+#define SBAR_H_MAX (EDITOR_COLS - 1)    /* right-most horizontal marker column */
+
 static void update_scrollbars(TextView *v) {
     int nlines = textdoc_num_lines(v->doc);
     int vrange = nlines - EDITOR_ROWS;       /* scrollable lines */
     int hrange = MAX_LEFT;
     int hor, ver;
 
-    /* _cgfx_ss_sbar takes a thumb position; we send a 0..255 proportional
-       value. (Confirm the expected range on real hardware.) */
-    ver = (vrange > 0) ? (int)((long)v->top_line * 255 / vrange) : 0;
-    hor = (hrange > 0) ? (int)((long)v->left_col * 255 / hrange) : 0;
-    hor = clampi(hor, 0, 255);
-    ver = clampi(ver, 0, 255);
+    ver = (vrange > 0) ? (int)((long)v->top_line * SBAR_V_MAX / vrange) : 0;
+    hor = (hrange > 0) ? (int)((long)v->left_col * SBAR_H_MAX / hrange) : 0;
+    hor = clampi(hor, 0, SBAR_H_MAX);
+    ver = clampi(ver, 0, SBAR_V_MAX);
 
-    /* _cgfx_ss_sbar is slow; only push when the thumb actually moves. A small
-       scroll in a large document often leaves the 0..255 value unchanged. */
+    /* _cgfx_ss_sbar is slow; only push when the marker actually moves. A small
+       scroll in a large document often leaves the character position unchanged. */
     if (hor != v->sbar_hor || ver != v->sbar_ver) {
         v->sbar_hor = hor;
         v->sbar_ver = ver;
@@ -96,7 +105,9 @@ static int ensure_visible(TextView *v) {
     }
     v->left_col = clampi(v->left_col, 0, MAX_LEFT);
 
-    if (v->top_line != oldtop || v->left_col != oldleft) {
+    v->scroll_drow = v->top_line - oldtop;
+    v->scroll_dcol = v->left_col - oldleft;
+    if (v->scroll_drow != 0 || v->scroll_dcol != 0) {
         update_scrollbars(v);
         return 1;
     }
@@ -163,6 +174,17 @@ static void draw_text_row(const TextView *v, int srow) {
    cell (EDITOR_COLS-1) is never written -- that would scroll the window. */
 #define STATUS_POS_COL 60   /* fixed start column of the "Ln .. Col .." field */
 
+/* Show the Ln/Col field? When off, the status line is just the name + dirty
+   marker (redrawn only when that changes) -- no per-keystroke status work. */
+#define SHOW_STATUS_POS 0
+
+#if SHOW_STATUS_POS
+#define STATUS_LEFT_END STATUS_POS_COL      /* leave room for the Ln/Col field */
+#else
+#define STATUS_LEFT_END (EDITOR_COLS - 1)   /* name fills the whole status line */
+#endif
+
+#if SHOW_STATUS_POS
 /* Write n (>=0) left-justified in a `width`-char field, space-padded, in a
    SINGLE cwrite -- one OS-9 call instead of one per digit/space. */
 static void put_int_w(int n, int width) {
@@ -188,30 +210,39 @@ static void put_int_w(int n, int width) {
     }
     cwrite(MV_OUTPATH, buf, w);
 }
+#endif /* SHOW_STATUS_POS */
 
-/* Left part: " name [*]" padded out to STATUS_POS_COL. */
+/* Left part: " name [*]". The whole status row is first filled white with a
+   graphics bar, THEN the name is drawn on top in reverse video. The bar is how
+   we paint the bottom-right corner cell: text can't reach it (a cwrite there
+   advances the cursor past the corner and auto-scrolls the window), but a bar
+   fills pixels without moving the text cursor. Graphics pixels map to text cells
+   * 8 sharing the same origin (cf. MVKit radio.c), so the bar lines up with the
+   status row, and it also clears any stale text from a previous, longer name --
+   no padding loop needed. */
 static void draw_status_left(const TextView *v) {
     const char *name = v->doc_name ? v->doc_name : "untitled";
     int nlen = strlen(name);
-    int written = 1, pad;
     char sp = ' ';
 
-    if (nlen > STATUS_POS_COL - 4) {
-        nlen = STATUS_POS_COL - 4;          /* clip an over-long name */
+    if (nlen > STATUS_LEFT_END - 4) {
+        nlen = STATUS_LEFT_END - 4;         /* clip an over-long name */
     }
+    _cgfx_fcolor(MV_OUTPATH, v->fg);                       /* the bar is white  */
+    _cgfx_setdptr(MV_OUTPATH, 0, EDITOR_STATUS_ROW * 8);
+    _cgfx_rbar(MV_OUTPATH, EDITOR_COLS * 8 - 1, 8 - 1);    /* fill the full row */
+
     _cgfx_curxy(MV_OUTPATH, 0, EDITOR_STATUS_ROW);
     _cgfx_revon(MV_OUTPATH);
     cwrite(MV_OUTPATH, &sp, 1);
-    cwrite(MV_OUTPATH, name, nlen);             written += nlen;
+    cwrite(MV_OUTPATH, name, nlen);
     if (v->doc_modified) {
-        cwrite(MV_OUTPATH, " *", 2);            written += 2;
-    }
-    for (pad = written; pad < STATUS_POS_COL; ++pad) {
-        cwrite(MV_OUTPATH, &sp, 1);
+        cwrite(MV_OUTPATH, " *", 2);
     }
     _cgfx_revoff(MV_OUTPATH);
 }
 
+#if SHOW_STATUS_POS
 /* Fixed columns of the position field: "Ln " 60-62, line 63-66, " Col " 67-71,
    col 72-75, pad 76. The labels never change, so they are drawn once per full
    status redraw; the numbers are rewritten in place (4 cells each) only when
@@ -254,26 +285,31 @@ static void draw_status_nums(TextView *v) {
     }
     _cgfx_revoff(MV_OUTPATH);
 }
+#endif /* SHOW_STATUS_POS */
 
-/* Full status redraw: name, dirty marker, labels, and both numbers. */
+/* Full status redraw: name, dirty marker, and (if enabled) the Ln/Col field. */
 static void draw_status_full(TextView *v) {
     draw_status_left(v);
     v->status_dirty_shown = v->doc_modified ? 1 : 0;
+#if SHOW_STATUS_POS
     draw_status_labels();
     v->status_line_shown = v->status_col_shown = -1;   /* force both numbers */
     draw_status_nums(v);
+#endif
 }
 
-/* Incremental status: rewrite only the parts that changed (the labels are
-   already on screen from a prior full redraw). The common keystroke rewrites
-   just the 4-cell Col number (curxy + revon + cwrite + revoff). */
+/* Incremental status: rewrite only the parts that changed. With the position
+   field off this is a no-op unless the dirty marker flipped, so a keystroke
+   does no status work at all. */
 static void draw_status_inc(TextView *v) {
     int dirty = v->doc_modified ? 1 : 0;
     if (dirty != v->status_dirty_shown) {
         draw_status_left(v);
         v->status_dirty_shown = dirty;
     }
+#if SHOW_STATUS_POS
     draw_status_nums(v);
+#endif
 }
 
 static void draw_caret(const TextView *v) {
@@ -358,18 +394,15 @@ static void apply_refresh(TextView *v, RefreshScope scope, int from_line) {
         case RS_ROW:
             repaint_rows(v, v->cur_line - v->top_line, v->cur_line - v->top_line);
             break;
-        case RS_FROM: {
-            /* Only rows from the edit down to the first blank row after the
-               document's content changed; everything lower is already blank.
-               (num_lines - top_line is that first blank row, which also covers
-               clearing the row vacated by a line-join.) */
-            int last = textdoc_num_lines(v->doc) - v->top_line;
-            if (last > EDITOR_ROWS - 1) {
-                last = EDITOR_ROWS - 1;
-            }
-            repaint_rows(v, from_line - v->top_line, last);
+        case RS_FROM:
+            /* Repaint from the edit row down to the bottom of the text area.
+               We can't stop at the document's content end: a deletion that
+               shrinks the doc while the viewport sits at the end leaves stale
+               rows below the new end-of-doc, and those must be blanked. Rows
+               past the content end draw as blank (build_row pads past-end lines
+               with spaces), so redrawing through EDITOR_ROWS-1 clears them. */
+            repaint_rows(v, from_line - v->top_line, EDITOR_ROWS - 1);
             break;
-        }
         case RS_ALL:
             text_view_draw(&v->view);
             break;
@@ -520,12 +553,21 @@ static void drop_selection(TextView *v) {
     v->sel_col = v->cur_col;
 }
 
-/* A cursor move: scroll if needed (full repaint), else clear any old selection
-   (full repaint) or just move the caret. */
+/* Repaint after a pure scroll (defined below, with the hardware line ops). */
+static void pure_scroll_repaint(TextView *v);
+
+/* A cursor move: scroll if needed, else clear any old selection (full repaint)
+   or just move the caret. A scroll with no selection to clear can use the fast
+   hardware path; an old selection must be erased off the shifted rows, so that
+   needs a full redraw. */
 static void after_move(TextView *v, int had_selection) {
     drop_selection(v);
     if (ensure_visible(v)) {
-        apply_refresh(v, RS_ALL, 0);
+        if (had_selection) {
+            apply_refresh(v, RS_ALL, 0);
+        } else {
+            pure_scroll_repaint(v);
+        }
     } else {
         apply_refresh(v, had_selection ? RS_ALL : RS_CARET, 0);
     }
@@ -560,6 +602,17 @@ static void move_right(TextView *v) {
     } else if (v->cur_line < textdoc_num_lines(v->doc) - 1) {
         ++v->cur_line;
         v->cur_col = 0;
+    }
+    after_move(v, had);
+}
+
+static void move_left(TextView *v) {
+    int had = has_selection(v);
+    if (v->cur_col > 0) {
+        --v->cur_col;
+    } else if (v->cur_line > 0) {
+        --v->cur_line;
+        v->cur_col = line_len(v, v->cur_line);
     }
     after_move(v, had);
 }
@@ -600,6 +653,117 @@ static void type_char(TextView *v, char c) {
     }
 }
 
+/* Hardware line insert/delete. _cgfx_insline/_cgfx_delline shift every row below
+   the cursor within the active working area, so we clip the area to just the
+   text rows first -- otherwise they would drag the status line (row
+   EDITOR_STATUS_ROW) along. cwarea is buffered, so the clip, the shift, and the
+   un-clip all flush in order. Coordinates are absolute window cells: a WT_FSWIN
+   content area starts one cell in (the frame).
+
+   Crucially we un-clip (clip_full) BEFORE redrawing the changed rows. While the
+   area is clipped to the text rows, row EDITOR_ROWS-1 is the working area's LAST
+   row, and a full-width cwrite there advances the cursor past its bottom-right
+   corner -- which makes the SCF window auto-scroll. Drawing in the full area
+   (where the status row is below) the wrap off row EDITOR_ROWS-1 is harmless:
+   the next curxy (status or caret) cancels it before anything scrolls. */
+#define WIN_CCOL 1
+#define WIN_CROW 1
+
+static void clip_text_rows(void) {
+    _cgfx_cwarea(MV_OUTPATH, WIN_CCOL, WIN_CROW, EDITOR_COLS, EDITOR_ROWS);
+}
+static void clip_full(void) {
+    _cgfx_cwarea(MV_OUTPATH, WIN_CCOL, WIN_CROW, EDITOR_COLS, EDITOR_ROWS + 1);
+}
+
+/* A line was split at screen row `sr`: push the rows below down with a hardware
+   insert-line and repaint only the two rows that changed (the truncated split
+   line and the new tail). The row pushed off the bottom is correctly lost. */
+static void insert_line_render(TextView *v, int sr) {
+    if (v->suppress_draw) {
+        return;
+    }
+    render_begin();
+    clip_text_rows();
+    _cgfx_curxy(MV_OUTPATH, 0, sr + 1);
+    _cgfx_insline(MV_OUTPATH);
+    clip_full();                    /* un-clip before drawing (see note above) */
+    draw_text_row(v, sr);
+    draw_text_row(v, sr + 1);
+    draw_status_inc(v);
+    render_end(v);
+}
+
+/* A line was removed, leaving the merged line at screen row `sr`: pull the rows
+   below up with a hardware delete-line, then repaint the merged row and the
+   bottom row (a previously off-screen line may have scrolled into it). */
+static void delete_line_render(TextView *v, int sr) {
+    if (v->suppress_draw) {
+        return;
+    }
+    render_begin();
+    clip_text_rows();
+    _cgfx_curxy(MV_OUTPATH, 0, sr + 1);
+    _cgfx_delline(MV_OUTPATH);
+    clip_full();                    /* un-clip before drawing (see note above) */
+    draw_text_row(v, sr);
+    draw_text_row(v, EDITOR_ROWS - 1);
+    draw_status_inc(v);
+    render_end(v);
+}
+
+/* Scroll the text area by `d` rows with the same hardware line ops (d>0 shifts
+   the content up / view down via delline, d<0 the other way via insline), then
+   repaint screen rows [r0,r1]: the band the shift left blank, widened to also
+   cover any rows a triggering edit changed. Far cheaper than redrawing all
+   EDITOR_ROWS. Same clip discipline as insert_line_render: shift clipped to the
+   text rows, un-clip before the redraws. */
+static void vscroll_repaint(TextView *v, int d, int r0, int r1) {
+    int i;
+    if (v->suppress_draw) {
+        return;
+    }
+    render_begin();
+    clip_text_rows();
+    _cgfx_curxy(MV_OUTPATH, 0, 0);
+    if (d > 0) {
+        for (i = 0; i < d; ++i) {
+            _cgfx_delline(MV_OUTPATH);
+        }
+    } else {
+        for (i = 0; i < -d; ++i) {
+            _cgfx_insline(MV_OUTPATH);
+        }
+    }
+    clip_full();
+    if (r0 < 0) {
+        r0 = 0;
+    }
+    if (r1 > EDITOR_ROWS - 1) {
+        r1 = EDITOR_ROWS - 1;
+    }
+    for (i = r0; i <= r1; ++i) {
+        draw_text_row(v, i);
+    }
+    draw_status_inc(v);
+    render_end(v);
+}
+
+/* Repaint after a pure scroll (the document text did not change): a small
+   vertical move hardware-shifts the overlap and redraws only the newly exposed
+   band; a horizontal move or a jump of a whole screen falls back to a full
+   redraw. Reads the deltas ensure_visible() recorded. */
+static void pure_scroll_repaint(TextView *v) {
+    int d = v->scroll_drow;
+    if (v->scroll_dcol != 0 || d == 0 || d >= EDITOR_ROWS || d <= -EDITOR_ROWS) {
+        text_view_draw(&v->view);
+    } else if (d > 0) {
+        vscroll_repaint(v, d, EDITOR_ROWS - d, EDITOR_ROWS - 1);
+    } else {
+        vscroll_repaint(v, d, 0, -d - 1);
+    }
+}
+
 static void do_enter(TextView *v) {
     int had = has_selection(v);
     int from = edit_from_line(v, had);
@@ -614,9 +778,17 @@ static void do_enter(TextView *v) {
     vc_end(v);
 
     if (ensure_visible(v)) {
-        apply_refresh(v, RS_ALL, 0);
+        if (!had && v->scroll_dcol == 0 && v->scroll_drow == 1) {
+            /* scrolled down one line: hardware-shift, then redraw the truncated
+               split head (now at the second-to-last row) and the new tail. */
+            vscroll_repaint(v, 1, (v->cur_line - 1) - v->top_line, EDITOR_ROWS - 1);
+        } else {
+            apply_refresh(v, RS_ALL, 0);
+        }
+    } else if (had) {
+        apply_refresh(v, RS_FROM, from);   /* selection delete + split: complex */
     } else {
-        apply_refresh(v, RS_FROM, from);   /* split shifts everything below */
+        insert_line_render(v, (v->cur_line - 1) - v->top_line);
     }
 }
 
@@ -648,9 +820,19 @@ static void do_backspace(TextView *v) {
     vc_end(v);
 
     if (ensure_visible(v)) {
-        apply_refresh(v, RS_ALL, 0);
-    } else if (had || joined) {
-        apply_refresh(v, RS_FROM, from);   /* lines below shifted up */
+        if (!had && joined && v->scroll_dcol == 0 && v->scroll_drow == -1) {
+            /* A join at the top scrolled up one line. Removing a line and
+               scrolling up one cancel for every row below the merge -- those
+               rows are already correct on screen -- so only the merged line
+               (now row 0) needs redrawing. */
+            repaint_rows(v, 0, 0);
+        } else {
+            apply_refresh(v, RS_ALL, 0);
+        }
+    } else if (had) {
+        apply_refresh(v, RS_FROM, from);   /* selection delete: lines shifted up */
+    } else if (joined) {
+        delete_line_render(v, v->cur_line - v->top_line);
     } else if (del_col >= 0) {
         /* erased one char: [del_col, old_len) shifted left, last cell cleared */
         repaint_row_span(v, del_col - v->left_col, old_len - v->left_col);
@@ -663,6 +845,7 @@ int text_view_key(TextView *v, char c) {
     switch (c) {
         case KEY_UP:        move_up(v);      return 1;
         case KEY_DOWN:      move_down(v);    return 1;
+        case KEY_LEFT:      move_left(v);    return 1;
         case KEY_RIGHT:     move_right(v);   return 1;
         case KEY_ENTER:     do_enter(v);     return 1;
         case KEY_BACKSPACE: do_backspace(v); return 1;
@@ -757,11 +940,29 @@ static int text_view_handle_click(MVView *mv, MVUiEvent *event) {
 void text_view_scroll(TextView *v, int dcol, int drow) {
     int nlines = textdoc_num_lines(v->doc);
     int vmax = (nlines > EDITOR_ROWS) ? nlines - EDITOR_ROWS : 0;
+    int oldtop = v->top_line, oldleft = v->left_col;
+    int dt, dc;
 
     v->top_line = clampi(v->top_line + drow, 0, vmax);
     v->left_col = clampi(v->left_col + dcol, 0, MAX_LEFT);
+    dt = v->top_line - oldtop;
+    dc = v->left_col - oldleft;
+    if (dt == 0 && dc == 0) {
+        return;                            /* already at the edge: nothing moved */
+    }
     update_scrollbars(v);
-    text_view_refresh(v);
+
+    /* The content does not change, so a small vertical scroll can hardware-shift
+       the overlap and draw only the exposed band (any visible selection is
+       shifted with it). A horizontal scroll or a whole-screen jump is a full
+       redraw. */
+    if (dc != 0 || dt >= EDITOR_ROWS || dt <= -EDITOR_ROWS) {
+        text_view_refresh(v);
+    } else if (dt > 0) {
+        vscroll_repaint(v, dt, EDITOR_ROWS - dt, EDITOR_ROWS - 1);
+    } else {
+        vscroll_repaint(v, dt, 0, -dt - 1);
+    }
 }
 
 

@@ -31,6 +31,11 @@ MEM_SIZE     := 120
 CMOC_OS9_DIR := cmoc_os9
 BASEIMAGE    := disks/NOS9_6809_L2_v030300_coco3_80d.os9
 
+# Sample document(s) copied to the disk root. The CR-converted copy under
+# $(BUILD) is what lands on the disk (see the rule below). Deferred (=) so
+# $(BUILD), defined by app.mk after this point, expands when the rule runs.
+DATA_FILES    = $(BUILD)/tom.mve
+
 -include mvkit/app.mk
 
 # ---- bootstrap that app.mk leaves to the project ----------------------------
@@ -42,6 +47,12 @@ $(BUILD)/$(APP): | libc libcgfx mvkit
 # app.mk's AIF rule has no prerequisites, so a change to WIN_W/WIN_H/SCREEN_TYPE
 # would not regenerate it. Depend on this Makefile so those edits take effect.
 $(AIF): Makefile
+
+# Convert the host (LF) sample document to OS-9 CR line endings before it is
+# copied to the disk root, so it's a proper OS-9 text file (textdoc_load also
+# tolerates LF, but mvedit's own save and other OS-9 tools use CR).
+$(BUILD)/tom.mve: tom.mve | $(BUILD)
+	unix2mac -q -n $< $@
 
 $(CMOC_OS9_DIR):
 	git clone https://github.com/nitros9project/cmoc_os9.git $@

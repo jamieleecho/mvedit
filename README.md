@@ -12,6 +12,8 @@ working area, of which the bottom row is a status line, so text occupies 78×22
 cells. Lines may be up to **127** characters long; the view scrolls horizontally
 and vertically to reach the rest.
 
+![mvedit running under Multi-Vue](docs/mvedit.png)
+
 ## Features
 
 - **Mouse:** click to place the cursor; click-drag to select a range (selection

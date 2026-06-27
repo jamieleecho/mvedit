@@ -32,10 +32,18 @@ in a scrolling window.
   `MVMenuItemAction` table (the `{-1,-1,...}` sentinel). mvedit replaces the
   usual no-op sentinel with `unhandled_menu`, which switches on the id and
   scrolls. (`MN_MOVE` / `MN_GROW` also arrive there and are ignored.)
-- Set the scroll **thumb** with `_cgfx_ss_sbar(path, horbar, verbar)`. The exact
-  units are not documented in the header; mvedit sends a 0..255 proportional
-  value. **Verify the thumb tracks correctly on real hardware** and adjust the
-  scale in `update_scrollbars()` if not.
+- Set the scroll **thumb** with `_cgfx_ss_sbar(path, horbar, verbar)`. The
+  header doesn't say, but the OS-9 Windowing System manual (p.10-64, "Set Scroll
+  Marker Positioning") is explicit: the args are **absolute character
+  coordinates** of the markers within the scroll regions — rows down from the
+  top of the vertical track, columns right from the left of the horizontal one —
+  **not** a 0..255 proportional value. Sending 0..255 was the bug: large values
+  land far off the track, wrap/clamp, and **paint the marker over the up arrow**
+  (the "scroll down blackens the up button" symptom) or hide the thumb. mvedit
+  now maps to `0..EDITOR_ROWS-1` / `0..EDITOR_COLS-1` (`SBAR_V_MAX`/`SBAR_H_MAX`
+  in `update_scrollbars()`); verified in MAME (thumb at the bottom when scrolled
+  to the end, up arrow clean). Tune the maxes if the thumb doesn't reach the
+  track ends on hardware.
 - The window is 80×25; chrome leaves a **78×23** working area. `mv_set_menus_sized
   (..., 80, 25)` pins the minimum size so the working area never changes.
 
@@ -49,29 +57,57 @@ in a scrolling window.
   mouse by 8 and uses `curxy` in the same space). Verify on a real run.
 - **Auto-scroll on a full write is the trap.** An OS-9 SCF window scrolls when
   the cursor advances past the bottom-right cell. So mvedit:
-  - uses the bottom row as a **status line** and writes it only to column
-    `EDITOR_COLS-2`, leaving the corner cell `(77, 22)` untouched;
+  - uses the bottom row as a **status line**. To make the white bar reach the
+    bottom-right corner cell `(77, 22)` — which *text* can't touch — it fills the
+    whole row with a **graphics bar** (`_cgfx_fcolor` + `_cgfx_setdptr` +
+    `_cgfx_rbar`) and draws the name on top in reverse video. A bar paints pixels
+    without moving the text cursor, so it never triggers the auto-scroll, and
+    graphics pixels map to text cells × 8 with the same origin (cf. MVKit
+    `radio.c`), so it lines up with the status row. The bar also clears stale
+    text from a longer previous name, so no padding loop is needed.
   - writes full-width text rows above it freely — wrapping from the end of row
     *r* to the start of row *r+1* is harmless because an explicit `curxy` at the
     next row cancels the pending wrap before anything scrolls.
-  If the window ever scrolls by itself during a repaint, something wrote that
-  corner cell.
+  If the window ever scrolls by itself during a *text* repaint, something wrote
+  that corner cell with `cwrite` (use the bar instead).
+  - **The same trap applies to a `cwarea`-clipped working area.** The
+    `_cgfx_insline`/`_cgfx_delline` paths clip to just the text rows
+    (`cwarea(1,1,78,22)`) so the hardware shift won't drag the status line — but
+    that makes row `EDITOR_ROWS-1` the *last* row of the active working area, so
+    a full-width `cwrite` there scrolls the window just like the real corner
+    does. Fix: do the shift while clipped, then **un-clip (`clip_full`) before
+    redrawing the changed rows**, so the bottom row is drawn in the full area
+    where the wrap off its end is harmless. This was the "Enter at the bottom of
+    the screen scrolls" bug; verified fixed in MAME (Enter on the second-to-last
+    row no longer scrolls the top line off).
+  - **Vertical scrolling uses the same `delline`/`insline` ops, not a full
+    redraw.** `vscroll_repaint()` hardware-shifts the overlapping rows and
+    redraws only the newly exposed band (~1 row vs all 22), so scroll-bar
+    arrows, arrow-key scrolls, and Enter-at-the-bottom are all cheap. Edge
+    cases worth remembering: an edit that *also* scrolls needs the dirtied rows
+    redrawn on top of the shift (Enter-at-bottom = `delline` + redraw the split
+    head & tail); a **backspace-join at the top** needs *no* shift at all —
+    removing a line and scrolling up one cancel for every row below the merge,
+    so only the merged row 0 is redrawn. Horizontal scrolls and whole-screen
+    jumps still fall back to a full redraw (line ops can't shift sideways).
 - Reverse-video selection: bracket the selected run with `_cgfx_revon` /
   `_cgfx_revoff` around its `cwrite`, exactly as the file dialog highlights the
   current row. The caret is the hardware text cursor (`_cgfx_curxy` + `_cgfx_curon`).
 
 ## Keyboard
 
-- CoCo/NitrOS-9 control codes used here: **Up `$0C`, Down `$0A`** (confirmed by
-  the file dialog's scroll keys), **Right `$09`**, **Enter `$0D`**, and the
-  **left/erase key `$08`**. The CoCo has no separate Backspace, so `$08` erases
-  and there is no left-arrow movement — reposition with the mouse (this app is
-  mouse-driven by design). All key codes are `#define`d at the top of
-  `text_view.c`; **verify against your keymap** and adjust.
+- CoCo/NitrOS-9 control codes used here: the **arrow keys move the cursor** —
+  **Up `$0C`, Down `$0A`** (confirmed by the file dialog's scroll keys),
+  **Right `$09`**, **Left `$08`** (the left/erase key) — **Enter `$0D`**, and
+  **Backspace = ESC/BREAK `$05`** (the code the file dialog reads for Escape).
+  All key codes are `#define`d at the top of `text_view.c`; **verify against your
+  keymap** and adjust. (Verified in MAME: `$08` moves left; the BREAK key,
+  injected via the `:row6` "BREAK" matrix field, deletes.)
 - The main run loop does **not** disable the keyboard interrupt/abort chars, so
-  `Ctrl-C` (`$03`) would raise a signal instead of being read. `mvedit_init()`
-  clears `sg_kbich`/`sg_kbach` (as the file dialog does) so the `Ctrl-` Edit
-  shortcuts arrive as data.
+  `BREAK`/`$05` (abort) and `Ctrl-C` (`$03`, interrupt) would raise a signal
+  instead of being read. `mvedit_init()` clears `sg_kbich`/`sg_kbach` on
+  `MV_INPATH` (as the file dialog does) so `$05` (Backspace here) and the `Ctrl-`
+  Edit shortcuts arrive as data.
 
 ## App architecture (mirrors mvdraw)
 

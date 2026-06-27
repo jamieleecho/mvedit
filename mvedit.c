@@ -39,12 +39,17 @@ static const MVTheme theme = { {
 
 #define DOC_EXT ".txt"
 
+/* Undo costs a whole-document snapshot on every change; set to 0 to disable. */
+#define ENABLE_UNDO 0
+
 
 /* ---- model / view / document state -------------------------------------- */
 
 static TextDoc textdoc;
+#if ENABLE_UNDO
 static TextDoc undo_buf;        /* single-level undo snapshot */
-static int     has_undo;
+#endif
+static int     has_undo;        /* always 0 when undo is disabled (Undo greyed) */
 
 static char    path[MV_PATH_MAX];
 static int     file_backed;
@@ -241,6 +246,7 @@ static void exit_action(MSRET *msinfo, int menuid, int itemno) {
 }
 
 static void undo_action(MSRET *msinfo, int menuid, int itemno) {
+#if ENABLE_UNDO
     if (!has_undo) {
         return;
     }
@@ -249,6 +255,7 @@ static void undo_action(MSRET *msinfo, int menuid, int itemno) {
     editor.doc_modified = 1;
     text_view_reclamp(&editor);
     refresh_menus_if_changed();
+#endif
 }
 
 static void cut_action(MSRET *msinfo, int menuid, int itemno) {
@@ -313,10 +320,12 @@ static MVMenuItemAction menu_actions[] = {
 
 /* ---- edit notifications: snapshot for undo, mark dirty ------------------- */
 
+#if ENABLE_UNDO
 static void on_will_change(TextView *v) {
     undo_buf = textdoc;
     has_undo = 1;
 }
+#endif
 
 static void on_did_change(TextView *v) {
     editor.doc_modified = 1;
@@ -357,13 +366,17 @@ static void handle_key_event(MVUiEvent *event) {
                 batching = 0;
             }
         } else {
-            if (!batching && _gs_rdy(MV_INPATH) > 0) {
+            if (!batching && _gs_rdy(MV_INPATH) != -1) {
                 text_view_begin_batch(&editor);   /* more queued: batch them */
                 batching = 1;
             }
             text_view_key(&editor, c);
         }
-        if (_gs_rdy(MV_INPATH) <= 0) {
+        /* _gs_rdy (SS_Ready) returns -1 only when the input buffer is empty;
+           a ready byte may read as 0, so test against -1 (as MVKit's file
+           dialog does), not > 0 -- otherwise a queued key is left unread and
+           waits for the run loop's next signal. */
+        if (_gs_rdy(MV_INPATH) == -1) {
             break;
         }
         if (read(MV_INPATH, &c, 1) != 1) {
@@ -416,18 +429,31 @@ static void mvedit_pre_init(int argc, char **argv) {
 }
 
 static void mvedit_init(void) {
+    struct sgbuf opts;
+
     assert(strncmp(file_items[FileIndex_Save]._mittl, "Save", 5) == 0);
     assert(strncmp(edit_items[EditIndex_Undo]._mittl, "Undo", 5) == 0);
 
     _cgfx_scalesw(MV_OUTPATH, false);
     _cgfx_font(MV_OUTPATH, GRP_FONT, FNT_S8X8);
 
+    /* Clear the keyboard interrupt/abort chars so ESC/BREAK (0x05, used here as
+       Backspace) and the Ctrl- shortcuts arrive as data instead of raising a
+       signal -- the same thing MVKit's file dialog does. */
+    if (_gs_opt(MV_INPATH, &opts) == 0) {
+        opts.sg_kbich = 0;
+        opts.sg_kbach = 0;
+        _ss_opt(MV_INPATH, &opts);
+    }
+
     /* Use the I-beam text pointer (hotspot 3,3) rather than the default arrow;
        the view also toggles this off around every repaint for speed. */
     _cgfx_setgc(MV_OUTPATH, GRP_PTR, PTR_TXT);
 
     text_view_init(&editor, 0, 0, EDITOR_COLS * 8, EDITOR_ROWS * 8, &textdoc);
+#if ENABLE_UNDO
     editor.will_change = on_will_change;
+#endif
     editor.did_change = on_did_change;
     text_view_set_status(&editor, status_name, 0);
     text_view_refresh(&editor);
