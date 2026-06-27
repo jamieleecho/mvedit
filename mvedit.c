@@ -40,7 +40,7 @@ static const MVTheme theme = { {
 #define DOC_EXT ".txt"
 
 /* Undo costs a whole-document snapshot on every change; set to 0 to disable. */
-#define ENABLE_UNDO 1
+#define ENABLE_UNDO 0
 
 
 /* ---- model / view / document state -------------------------------------- */
