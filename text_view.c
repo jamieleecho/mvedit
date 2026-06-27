@@ -55,21 +55,28 @@ static void selection_range(const TextView *v, int *l0, int *c0, int *l1, int *c
    possible line minus a screenful). */
 #define MAX_LEFT (ED_MAX_COLS - EDITOR_COLS + 1)
 
+/* _cgfx_ss_sbar positions the scroll markers in ABSOLUTE CHARACTER COORDINATES
+   within the scroll regions (per the OS-9 Windowing System manual, p.10-64) --
+   rows down from the top of the vertical track, columns right from the left of
+   the horizontal track. NOT a 0..255 proportional value: sending 255 puts the
+   marker far off the track (it wraps/clamps and paints over the up arrow). The
+   track length is about the working-area size. */
+#define SBAR_V_MAX (EDITOR_ROWS - 1)    /* bottom-most vertical marker row    */
+#define SBAR_H_MAX (EDITOR_COLS - 1)    /* right-most horizontal marker column */
+
 static void update_scrollbars(TextView *v) {
     int nlines = textdoc_num_lines(v->doc);
     int vrange = nlines - EDITOR_ROWS;       /* scrollable lines */
     int hrange = MAX_LEFT;
     int hor, ver;
 
-    /* _cgfx_ss_sbar takes a thumb position; we send a 0..255 proportional
-       value. (Confirm the expected range on real hardware.) */
-    ver = (vrange > 0) ? (int)((long)v->top_line * 255 / vrange) : 0;
-    hor = (hrange > 0) ? (int)((long)v->left_col * 255 / hrange) : 0;
-    hor = clampi(hor, 0, 255);
-    ver = clampi(ver, 0, 255);
+    ver = (vrange > 0) ? (int)((long)v->top_line * SBAR_V_MAX / vrange) : 0;
+    hor = (hrange > 0) ? (int)((long)v->left_col * SBAR_H_MAX / hrange) : 0;
+    hor = clampi(hor, 0, SBAR_H_MAX);
+    ver = clampi(ver, 0, SBAR_V_MAX);
 
-    /* _cgfx_ss_sbar is slow; only push when the thumb actually moves. A small
-       scroll in a large document often leaves the 0..255 value unchanged. */
+    /* _cgfx_ss_sbar is slow; only push when the marker actually moves. A small
+       scroll in a large document often leaves the character position unchanged. */
     if (hor != v->sbar_hor || ver != v->sbar_ver) {
         v->sbar_hor = hor;
         v->sbar_ver = ver;
@@ -381,18 +388,15 @@ static void apply_refresh(TextView *v, RefreshScope scope, int from_line) {
         case RS_ROW:
             repaint_rows(v, v->cur_line - v->top_line, v->cur_line - v->top_line);
             break;
-        case RS_FROM: {
-            /* Only rows from the edit down to the first blank row after the
-               document's content changed; everything lower is already blank.
-               (num_lines - top_line is that first blank row, which also covers
-               clearing the row vacated by a line-join.) */
-            int last = textdoc_num_lines(v->doc) - v->top_line;
-            if (last > EDITOR_ROWS - 1) {
-                last = EDITOR_ROWS - 1;
-            }
-            repaint_rows(v, from_line - v->top_line, last);
+        case RS_FROM:
+            /* Repaint from the edit row down to the bottom of the text area.
+               We can't stop at the document's content end: a deletion that
+               shrinks the doc while the viewport sits at the end leaves stale
+               rows below the new end-of-doc, and those must be blanked. Rows
+               past the content end draw as blank (build_row pads past-end lines
+               with spaces), so redrawing through EDITOR_ROWS-1 clears them. */
+            repaint_rows(v, from_line - v->top_line, EDITOR_ROWS - 1);
             break;
-        }
         case RS_ALL:
             text_view_draw(&v->view);
             break;

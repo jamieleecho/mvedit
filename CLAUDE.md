@@ -32,10 +32,18 @@ in a scrolling window.
   `MVMenuItemAction` table (the `{-1,-1,...}` sentinel). mvedit replaces the
   usual no-op sentinel with `unhandled_menu`, which switches on the id and
   scrolls. (`MN_MOVE` / `MN_GROW` also arrive there and are ignored.)
-- Set the scroll **thumb** with `_cgfx_ss_sbar(path, horbar, verbar)`. The exact
-  units are not documented in the header; mvedit sends a 0..255 proportional
-  value. **Verify the thumb tracks correctly on real hardware** and adjust the
-  scale in `update_scrollbars()` if not.
+- Set the scroll **thumb** with `_cgfx_ss_sbar(path, horbar, verbar)`. The
+  header doesn't say, but the OS-9 Windowing System manual (p.10-64, "Set Scroll
+  Marker Positioning") is explicit: the args are **absolute character
+  coordinates** of the markers within the scroll regions — rows down from the
+  top of the vertical track, columns right from the left of the horizontal one —
+  **not** a 0..255 proportional value. Sending 0..255 was the bug: large values
+  land far off the track, wrap/clamp, and **paint the marker over the up arrow**
+  (the "scroll down blackens the up button" symptom) or hide the thumb. mvedit
+  now maps to `0..EDITOR_ROWS-1` / `0..EDITOR_COLS-1` (`SBAR_V_MAX`/`SBAR_H_MAX`
+  in `update_scrollbars()`); verified in MAME (thumb at the bottom when scrolled
+  to the end, up arrow clean). Tune the maxes if the thumb doesn't reach the
+  track ends on hardware.
 - The window is 80×25; chrome leaves a **78×23** working area. `mv_set_menus_sized
   (..., 80, 25)` pins the minimum size so the working area never changes.
 
