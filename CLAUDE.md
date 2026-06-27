@@ -66,6 +66,16 @@ in a scrolling window.
     where the wrap off its end is harmless. This was the "Enter at the bottom of
     the screen scrolls" bug; verified fixed in MAME (Enter on the second-to-last
     row no longer scrolls the top line off).
+  - **Vertical scrolling uses the same `delline`/`insline` ops, not a full
+    redraw.** `vscroll_repaint()` hardware-shifts the overlapping rows and
+    redraws only the newly exposed band (~1 row vs all 22), so scroll-bar
+    arrows, arrow-key scrolls, and Enter-at-the-bottom are all cheap. Edge
+    cases worth remembering: an edit that *also* scrolls needs the dirtied rows
+    redrawn on top of the shift (Enter-at-bottom = `delline` + redraw the split
+    head & tail); a **backspace-join at the top** needs *no* shift at all —
+    removing a line and scrolling up one cancel for every row below the merge,
+    so only the merged row 0 is redrawn. Horizontal scrolls and whole-screen
+    jumps still fall back to a full redraw (line ops can't shift sideways).
 - Reverse-video selection: bracket the selected run with `_cgfx_revon` /
   `_cgfx_revoff` around its `cwrite`, exactly as the file dialog highlights the
   current row. The caret is the hardware text cursor (`_cgfx_curxy` + `_cgfx_curon`).

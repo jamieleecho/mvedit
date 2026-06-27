@@ -37,6 +37,7 @@ typedef struct TextView {
 
     int top_line;              /* document line shown on screen row 0          */
     int left_col;              /* document column shown at screen col 0        */
+    int scroll_drow, scroll_dcol;  /* deltas of the last ensure_visible() scroll */
 
     int sbar_hor, sbar_ver;    /* last scroll-thumb values pushed (-1 = none)  */
 

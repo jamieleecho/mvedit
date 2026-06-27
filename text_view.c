@@ -98,7 +98,9 @@ static int ensure_visible(TextView *v) {
     }
     v->left_col = clampi(v->left_col, 0, MAX_LEFT);
 
-    if (v->top_line != oldtop || v->left_col != oldleft) {
+    v->scroll_drow = v->top_line - oldtop;
+    v->scroll_dcol = v->left_col - oldleft;
+    if (v->scroll_drow != 0 || v->scroll_dcol != 0) {
         update_scrollbars(v);
         return 1;
     }
@@ -541,12 +543,21 @@ static void drop_selection(TextView *v) {
     v->sel_col = v->cur_col;
 }
 
-/* A cursor move: scroll if needed (full repaint), else clear any old selection
-   (full repaint) or just move the caret. */
+/* Repaint after a pure scroll (defined below, with the hardware line ops). */
+static void pure_scroll_repaint(TextView *v);
+
+/* A cursor move: scroll if needed, else clear any old selection (full repaint)
+   or just move the caret. A scroll with no selection to clear can use the fast
+   hardware path; an old selection must be erased off the shifted rows, so that
+   needs a full redraw. */
 static void after_move(TextView *v, int had_selection) {
     drop_selection(v);
     if (ensure_visible(v)) {
-        apply_refresh(v, RS_ALL, 0);
+        if (had_selection) {
+            apply_refresh(v, RS_ALL, 0);
+        } else {
+            pure_scroll_repaint(v);
+        }
     } else {
         apply_refresh(v, had_selection ? RS_ALL : RS_CARET, 0);
     }
@@ -691,6 +702,58 @@ static void delete_line_render(TextView *v, int sr) {
     render_end(v);
 }
 
+/* Scroll the text area by `d` rows with the same hardware line ops (d>0 shifts
+   the content up / view down via delline, d<0 the other way via insline), then
+   repaint screen rows [r0,r1]: the band the shift left blank, widened to also
+   cover any rows a triggering edit changed. Far cheaper than redrawing all
+   EDITOR_ROWS. Same clip discipline as insert_line_render: shift clipped to the
+   text rows, un-clip before the redraws. */
+static void vscroll_repaint(TextView *v, int d, int r0, int r1) {
+    int i;
+    if (v->suppress_draw) {
+        return;
+    }
+    render_begin();
+    clip_text_rows();
+    _cgfx_curxy(MV_OUTPATH, 0, 0);
+    if (d > 0) {
+        for (i = 0; i < d; ++i) {
+            _cgfx_delline(MV_OUTPATH);
+        }
+    } else {
+        for (i = 0; i < -d; ++i) {
+            _cgfx_insline(MV_OUTPATH);
+        }
+    }
+    clip_full();
+    if (r0 < 0) {
+        r0 = 0;
+    }
+    if (r1 > EDITOR_ROWS - 1) {
+        r1 = EDITOR_ROWS - 1;
+    }
+    for (i = r0; i <= r1; ++i) {
+        draw_text_row(v, i);
+    }
+    draw_status_inc(v);
+    render_end(v);
+}
+
+/* Repaint after a pure scroll (the document text did not change): a small
+   vertical move hardware-shifts the overlap and redraws only the newly exposed
+   band; a horizontal move or a jump of a whole screen falls back to a full
+   redraw. Reads the deltas ensure_visible() recorded. */
+static void pure_scroll_repaint(TextView *v) {
+    int d = v->scroll_drow;
+    if (v->scroll_dcol != 0 || d == 0 || d >= EDITOR_ROWS || d <= -EDITOR_ROWS) {
+        text_view_draw(&v->view);
+    } else if (d > 0) {
+        vscroll_repaint(v, d, EDITOR_ROWS - d, EDITOR_ROWS - 1);
+    } else {
+        vscroll_repaint(v, d, 0, -d - 1);
+    }
+}
+
 static void do_enter(TextView *v) {
     int had = has_selection(v);
     int from = edit_from_line(v, had);
@@ -705,7 +768,13 @@ static void do_enter(TextView *v) {
     vc_end(v);
 
     if (ensure_visible(v)) {
-        apply_refresh(v, RS_ALL, 0);
+        if (!had && v->scroll_dcol == 0 && v->scroll_drow == 1) {
+            /* scrolled down one line: hardware-shift, then redraw the truncated
+               split head (now at the second-to-last row) and the new tail. */
+            vscroll_repaint(v, 1, (v->cur_line - 1) - v->top_line, EDITOR_ROWS - 1);
+        } else {
+            apply_refresh(v, RS_ALL, 0);
+        }
     } else if (had) {
         apply_refresh(v, RS_FROM, from);   /* selection delete + split: complex */
     } else {
@@ -741,7 +810,15 @@ static void do_backspace(TextView *v) {
     vc_end(v);
 
     if (ensure_visible(v)) {
-        apply_refresh(v, RS_ALL, 0);
+        if (!had && joined && v->scroll_dcol == 0 && v->scroll_drow == -1) {
+            /* A join at the top scrolled up one line. Removing a line and
+               scrolling up one cancel for every row below the merge -- those
+               rows are already correct on screen -- so only the merged line
+               (now row 0) needs redrawing. */
+            repaint_rows(v, 0, 0);
+        } else {
+            apply_refresh(v, RS_ALL, 0);
+        }
     } else if (had) {
         apply_refresh(v, RS_FROM, from);   /* selection delete: lines shifted up */
     } else if (joined) {
@@ -853,11 +930,29 @@ static int text_view_handle_click(MVView *mv, MVUiEvent *event) {
 void text_view_scroll(TextView *v, int dcol, int drow) {
     int nlines = textdoc_num_lines(v->doc);
     int vmax = (nlines > EDITOR_ROWS) ? nlines - EDITOR_ROWS : 0;
+    int oldtop = v->top_line, oldleft = v->left_col;
+    int dt, dc;
 
     v->top_line = clampi(v->top_line + drow, 0, vmax);
     v->left_col = clampi(v->left_col + dcol, 0, MAX_LEFT);
+    dt = v->top_line - oldtop;
+    dc = v->left_col - oldleft;
+    if (dt == 0 && dc == 0) {
+        return;                            /* already at the edge: nothing moved */
+    }
     update_scrollbars(v);
-    text_view_refresh(v);
+
+    /* The content does not change, so a small vertical scroll can hardware-shift
+       the overlap and draw only the exposed band (any visible selection is
+       shifted with it). A horizontal scroll or a whole-screen jump is a full
+       redraw. */
+    if (dc != 0 || dt >= EDITOR_ROWS || dt <= -EDITOR_ROWS) {
+        text_view_refresh(v);
+    } else if (dt > 0) {
+        vscroll_repaint(v, dt, EDITOR_ROWS - dt, EDITOR_ROWS - 1);
+    } else {
+        vscroll_repaint(v, dt, 0, -dt - 1);
+    }
 }
 
 
