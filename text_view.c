@@ -637,7 +637,14 @@ static void type_char(TextView *v, char c) {
    text rows first -- otherwise they would drag the status line (row
    EDITOR_STATUS_ROW) along. cwarea is buffered, so the clip, the shift, and the
    un-clip all flush in order. Coordinates are absolute window cells: a WT_FSWIN
-   content area starts one cell in (the frame). */
+   content area starts one cell in (the frame).
+
+   Crucially we un-clip (clip_full) BEFORE redrawing the changed rows. While the
+   area is clipped to the text rows, row EDITOR_ROWS-1 is the working area's LAST
+   row, and a full-width cwrite there advances the cursor past its bottom-right
+   corner -- which makes the SCF window auto-scroll. Drawing in the full area
+   (where the status row is below) the wrap off row EDITOR_ROWS-1 is harmless:
+   the next curxy (status or caret) cancels it before anything scrolls. */
 #define WIN_CCOL 1
 #define WIN_CROW 1
 
@@ -659,9 +666,9 @@ static void insert_line_render(TextView *v, int sr) {
     clip_text_rows();
     _cgfx_curxy(MV_OUTPATH, 0, sr + 1);
     _cgfx_insline(MV_OUTPATH);
+    clip_full();                    /* un-clip before drawing (see note above) */
     draw_text_row(v, sr);
     draw_text_row(v, sr + 1);
-    clip_full();
     draw_status_inc(v);
     render_end(v);
 }
@@ -677,9 +684,9 @@ static void delete_line_render(TextView *v, int sr) {
     clip_text_rows();
     _cgfx_curxy(MV_OUTPATH, 0, sr + 1);
     _cgfx_delline(MV_OUTPATH);
+    clip_full();                    /* un-clip before drawing (see note above) */
     draw_text_row(v, sr);
     draw_text_row(v, EDITOR_ROWS - 1);
-    clip_full();
     draw_status_inc(v);
     render_end(v);
 }

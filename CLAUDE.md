@@ -56,6 +56,16 @@ in a scrolling window.
     next row cancels the pending wrap before anything scrolls.
   If the window ever scrolls by itself during a repaint, something wrote that
   corner cell.
+  - **The same trap applies to a `cwarea`-clipped working area.** The
+    `_cgfx_insline`/`_cgfx_delline` paths clip to just the text rows
+    (`cwarea(1,1,78,22)`) so the hardware shift won't drag the status line — but
+    that makes row `EDITOR_ROWS-1` the *last* row of the active working area, so
+    a full-width `cwrite` there scrolls the window just like the real corner
+    does. Fix: do the shift while clipped, then **un-clip (`clip_full`) before
+    redrawing the changed rows**, so the bottom row is drawn in the full area
+    where the wrap off its end is harmless. This was the "Enter at the bottom of
+    the screen scrolls" bug; verified fixed in MAME (Enter on the second-to-last
+    row no longer scrolls the top line off).
 - Reverse-video selection: bracket the selected run with `_cgfx_revon` /
   `_cgfx_revoff` around its `cwrite`, exactly as the file dialog highlights the
   current row. The caret is the hardware text cursor (`_cgfx_curxy` + `_cgfx_curon`).
