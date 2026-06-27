@@ -57,13 +57,19 @@ in a scrolling window.
   mouse by 8 and uses `curxy` in the same space). Verify on a real run.
 - **Auto-scroll on a full write is the trap.** An OS-9 SCF window scrolls when
   the cursor advances past the bottom-right cell. So mvedit:
-  - uses the bottom row as a **status line** and writes it only to column
-    `EDITOR_COLS-2`, leaving the corner cell `(77, 22)` untouched;
+  - uses the bottom row as a **status line**. To make the white bar reach the
+    bottom-right corner cell `(77, 22)` — which *text* can't touch — it fills the
+    whole row with a **graphics bar** (`_cgfx_fcolor` + `_cgfx_setdptr` +
+    `_cgfx_rbar`) and draws the name on top in reverse video. A bar paints pixels
+    without moving the text cursor, so it never triggers the auto-scroll, and
+    graphics pixels map to text cells × 8 with the same origin (cf. MVKit
+    `radio.c`), so it lines up with the status row. The bar also clears stale
+    text from a longer previous name, so no padding loop is needed.
   - writes full-width text rows above it freely — wrapping from the end of row
     *r* to the start of row *r+1* is harmless because an explicit `curxy` at the
     next row cancels the pending wrap before anything scrolls.
-  If the window ever scrolls by itself during a repaint, something wrote that
-  corner cell.
+  If the window ever scrolls by itself during a *text* repaint, something wrote
+  that corner cell with `cwrite` (use the bar instead).
   - **The same trap applies to a `cwarea`-clipped working area.** The
     `_cgfx_insline`/`_cgfx_delline` paths clip to just the text rows
     (`cwarea(1,1,78,22)`) so the hardware shift won't drag the status line — but

@@ -212,26 +212,32 @@ static void put_int_w(int n, int width) {
 }
 #endif /* SHOW_STATUS_POS */
 
-/* Left part: " name [*]", padded out to STATUS_LEFT_END (the Ln/Col column when
-   the position field is shown, else the whole line). */
+/* Left part: " name [*]". The whole status row is first filled white with a
+   graphics bar, THEN the name is drawn on top in reverse video. The bar is how
+   we paint the bottom-right corner cell: text can't reach it (a cwrite there
+   advances the cursor past the corner and auto-scrolls the window), but a bar
+   fills pixels without moving the text cursor. Graphics pixels map to text cells
+   * 8 sharing the same origin (cf. MVKit radio.c), so the bar lines up with the
+   status row, and it also clears any stale text from a previous, longer name --
+   no padding loop needed. */
 static void draw_status_left(const TextView *v) {
     const char *name = v->doc_name ? v->doc_name : "untitled";
     int nlen = strlen(name);
-    int written = 1, pad;
     char sp = ' ';
 
     if (nlen > STATUS_LEFT_END - 4) {
         nlen = STATUS_LEFT_END - 4;         /* clip an over-long name */
     }
+    _cgfx_fcolor(MV_OUTPATH, v->fg);                       /* the bar is white  */
+    _cgfx_setdptr(MV_OUTPATH, 0, EDITOR_STATUS_ROW * 8);
+    _cgfx_rbar(MV_OUTPATH, EDITOR_COLS * 8 - 1, 8 - 1);    /* fill the full row */
+
     _cgfx_curxy(MV_OUTPATH, 0, EDITOR_STATUS_ROW);
     _cgfx_revon(MV_OUTPATH);
     cwrite(MV_OUTPATH, &sp, 1);
-    cwrite(MV_OUTPATH, name, nlen);             written += nlen;
+    cwrite(MV_OUTPATH, name, nlen);
     if (v->doc_modified) {
-        cwrite(MV_OUTPATH, " *", 2);            written += 2;
-    }
-    for (pad = written; pad < STATUS_LEFT_END; ++pad) {
-        cwrite(MV_OUTPATH, &sp, 1);
+        cwrite(MV_OUTPATH, " *", 2);
     }
     _cgfx_revoff(MV_OUTPATH);
 }
